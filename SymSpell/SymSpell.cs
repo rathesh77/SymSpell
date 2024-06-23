@@ -32,6 +32,27 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
+
+public class Metadata {
+    public string name;
+    public int age;
+
+    public Metadata()
+    {
+    }
+
+
+    public Metadata(string name, int age) {
+        this.name = name;
+        this.age = age;
+    }
+
+    public override string ToString()
+    {
+        return $"Name: {name}, Age: {age}";
+    }
+};
+
 public class SymSpell
 {
     /// <summary>Controls the closeness/quantity of returned spelling suggestions.</summary>
@@ -67,7 +88,7 @@ public class SymSpell
     // A list of suggestions might have a single suggestion, or multiple suggestions. 
     private Dictionary<int, string[]> deletes;
     // Dictionary of unique correct spelling words, and the frequency count for each word.
-    private readonly Dictionary<string, Int64> words;
+    private readonly Dictionary<string, (Int64, Metadata)> words;
     // Dictionary of unique words that are below the count threshold for being considered correct spellings.
     private Dictionary<string, Int64> belowThresholdWords = new Dictionary<string, long>();
 
@@ -79,7 +100,7 @@ public class SymSpell
         /// <summary>Edit distance between searched for word and suggestion.</summary>
         public int distance = 0;
         /// <summary>Frequency of suggestion in the dictionary (a measure of how common the word is).</summary>
-        public Int64 count = 0;
+        public (Int64, Metadata) count = (0, new Metadata());
 
         /// <summary>Create a new instance of SuggestItem.</summary>
         /// <param name="term">The suggested word.</param>
@@ -88,16 +109,17 @@ public class SymSpell
         public SuggestItem()
         {
         }
-        public SuggestItem(string term, int distance, Int64 count)
+        public SuggestItem(string term, int distance, (Int64, Metadata) count)
         {
             this.term = term;
             this.distance = distance;
             this.count = count;
         }
+
         public int CompareTo(SuggestItem other)
         {
             // order by distance ascending, then by frequency count descending
-            if (this.distance == other.distance) return other.count.CompareTo(this.count);
+            if (this.distance == other.distance) return other.count.Item1.CompareTo(this.count.Item1);
             return this.distance.CompareTo(other.distance);
         }
         public override bool Equals(object obj)
@@ -158,7 +180,7 @@ public class SymSpell
         if (compactLevel > 16) throw new ArgumentOutOfRangeException(nameof(compactLevel));
 
         this.initialCapacity = initialCapacity;
-        this.words = new Dictionary<string, Int64>(initialCapacity);
+        this.words = new Dictionary<string, (Int64, Metadata)>(initialCapacity);
         this.maxDictionaryEditDistance = maxDictionaryEditDistance;
         this.prefixLength = prefixLength;
         this.countThreshold = countThreshold;
@@ -176,43 +198,43 @@ public class SymSpell
     /// <returns>True if the word was added as a new correctly spelled word,
     /// or false if the word is added as a below threshold word, or updates an
     /// existing correctly spelled word.</returns>
-    public bool CreateDictionaryEntry(string key, Int64 count, SuggestionStage staging = null)
+    public bool CreateDictionaryEntry(string key, (Int64, Metadata) count, SuggestionStage staging = null)
     {
-        if (count <= 0)
+        if (count.Item1 <= 0)
         {
             if (this.countThreshold > 0) return false; // no point doing anything if count is zero, as it can't change anything
-            count = 0;
+            count.Item1 = 0;
         }
         Int64 countPrevious = -1;
-
+        (Int64, Metadata) countPrevious2 = (-1, null);
         // look first in below threshold words, update count, and allow promotion to correct spelling word if count reaches threshold
         // threshold must be >1 for there to be the possibility of low threshold words
         if (countThreshold > 1 && belowThresholdWords.TryGetValue(key, out countPrevious))
         {
             // calculate new count for below threshold word
-            count = (Int64.MaxValue - countPrevious > count) ? countPrevious + count : Int64.MaxValue;
+            count.Item1 = (Int64.MaxValue - countPrevious > count.Item1) ? countPrevious + count.Item1 : Int64.MaxValue;
             // has reached threshold - remove from below threshold collection (it will be added to correct words below)
-            if (count >= countThreshold)
+            if (count.Item1 >= countThreshold)
             {
                 belowThresholdWords.Remove(key);
             }
             else
             {
-                belowThresholdWords[key] = count;
+                belowThresholdWords[key] = count.Item1;
                 return false;
             }
         }
-        else if (words.TryGetValue(key, out countPrevious))
+        else if (words.TryGetValue(key, out countPrevious2))
         {
             // just update count if it's an already added above threshold word
-            count = (Int64.MaxValue - countPrevious > count) ? countPrevious + count : Int64.MaxValue;
+            count.Item1 = (Int64.MaxValue - countPrevious2.Item1 > count.Item1) ? countPrevious2.Item1 + count.Item1 : Int64.MaxValue;
             words[key] = count;
             return false;
         }
-        else if (count < CountThreshold)
+        else if (count.Item1 < CountThreshold)
         {
             // new or existing below threshold word
-            belowThresholdWords[key] = count;
+            belowThresholdWords[key] = count.Item1;
             return false;
         }
 
@@ -348,7 +370,7 @@ public class SymSpell
                     //Int64 count;
                     if (Int64.TryParse(lineParts[countIndex], out Int64 count))
                     {
-                        CreateDictionaryEntry(key, count, staging);
+                        CreateDictionaryEntry(key, (count, new Metadata()), staging);
                     }
                 }
             }
@@ -386,7 +408,7 @@ public class SymSpell
             {
                 foreach (string key in ParseWords(line))
                 {
-                    CreateDictionaryEntry(key, 1, staging);
+                    CreateDictionaryEntry(key, (1, new Metadata()), staging);
                 }
             }
         }
@@ -459,7 +481,7 @@ public class SymSpell
         if (inputLen - maxEditDistance > maxDictionaryWordLength) goto end;
 
         // quick look for exact match
-        long suggestionCount = 0;
+        (long, Metadata) suggestionCount = (0, new Metadata());
         if (words.TryGetValue(input, out suggestionCount))
         {
             suggestions.Add(new SuggestItem(input, 0, suggestionCount));
@@ -586,7 +608,7 @@ public class SymSpell
                                     }
                                 case Verbosity.Top:
                                     {
-                                        if (distance < maxEditDistance2 || suggestionCount > suggestions[0].count)
+                                        if (distance < maxEditDistance2 || suggestionCount.Item1 > suggestions[0].count.Item1)
                                         {
                                             maxEditDistance2 = distance;
                                             suggestions[0] = si;
@@ -621,7 +643,7 @@ public class SymSpell
 
         //sort by ascending edit distance, then by descending word frequency
         if (suggestions.Count > 1) suggestions.Sort();
-		end: if (includeUnknown && (suggestions.Count == 0)) suggestions.Add(new SuggestItem(input, maxEditDistance + 1, 0));																															 
+		end: if (includeUnknown && (suggestions.Count == 0)) suggestions.Add(new SuggestItem(input, maxEditDistance + 1, (0, new Metadata())));																															 
         return suggestions;
     }//end if         
 	
@@ -885,12 +907,12 @@ public class SymSpell
                         //estimated edit distance
                         best2.distance = editDistanceMax + 1;
                         //estimated word occurrence probability P=10 / (N * 10^word length l)
-                        best2.count = (long)((double)10 / Math.Pow((double)10, (double)best2.term.Length)); // 0;
+                        best2.count.Item1 = (long)((double)10 / Math.Pow((double)10, (double)best2.term.Length)); // 0;
                     }
 
                     //distance1=edit distance between 2 split terms und their best corrections : als comparative value for the combination
                     int distance1 = best1.distance + best2.distance;
-                    if ((distance1 >= 0) && ((suggestionsCombi[0].distance + 1 < distance1) || ((suggestionsCombi[0].distance + 1 == distance1) && ((double)suggestionsCombi[0].count > (double)best1.count / (double)SymSpell.N * (double)best2.count))))
+                    if ((distance1 >= 0) && ((suggestionsCombi[0].distance + 1 < distance1) || ((suggestionsCombi[0].distance + 1 == distance1) && ((double)suggestionsCombi[0].count.Item1 > (double)best1.count.Item1 / (double)SymSpell.N * (double)best2.count.Item1))))
                     {
                         suggestionsCombi[0].distance++;
                         suggestionParts[suggestionParts.Count - 1] = suggestionsCombi[0];
@@ -944,7 +966,7 @@ public class SymSpell
                                 //if bigram exists in bigram dictionary
                                 if (bigrams.TryGetValue(suggestionSplit.term, out long bigramCount))
                                 {
-                                    suggestionSplit.count = bigramCount;
+                                    suggestionSplit.count.Item1 = bigramCount;
 
                                     //increase count, if split.corrections are part of or identical to input  
                                     //single term correction exists
@@ -954,18 +976,18 @@ public class SymSpell
                                         if ((suggestions1[0].term + suggestions2[0].term == termList1[i]))
                                         {
                                             //make count bigger than count of single term correction
-                                            suggestionSplit.count = Math.Max(suggestionSplit.count, suggestions[0].count + 2);
+                                            suggestionSplit.count.Item1 = Math.Max(suggestionSplit.count.Item1, suggestions[0].count.Item1 + 2);
                                         }
                                         else if ((suggestions1[0].term == suggestions[0].term) || (suggestions2[0].term == suggestions[0].term))
                                         {
                                             //make count bigger than count of single term correction
-                                            suggestionSplit.count = Math.Max(suggestionSplit.count, suggestions[0].count + 1);
+                                            suggestionSplit.count.Item1 = Math.Max(suggestionSplit.count.Item1, suggestions[0].count.Item1 + 1);
                                         }
                                     }
                                     //no single term correction exists
                                     else if ((suggestions1[0].term + suggestions2[0].term == termList1[i]))
                                     {
-                                        suggestionSplit.count = Math.Max(suggestionSplit.count, Math.Max(suggestions1[0].count, suggestions2[0].count) + 2);
+                                        suggestionSplit.count.Item1 = Math.Max(suggestionSplit.count.Item1, Math.Max(suggestions1[0].count.Item1, suggestions2[0].count.Item1) + 2);
                                     }
 
                                 }
@@ -973,10 +995,10 @@ public class SymSpell
                                 {
                                     //The Naive Bayes probability of the word combination is the product of the two word probabilities: P(AB) = P(A) * P(B)
                                     //use it to estimate the frequency count of the combination, which then is used to rank/select the best splitting variant  
-                                    suggestionSplit.count = Math.Min(bigramCountMin, (long)((double)suggestions1[0].count / (double)SymSpell.N * (double)suggestions2[0].count));
+                                    suggestionSplit.count.Item1 = Math.Min(bigramCountMin, (long)((double)suggestions1[0].count.Item1 / (double)SymSpell.N * (double)suggestions2[0].count.Item1));
                                 }
 
-                                if ((suggestionSplitBest == null) || (suggestionSplit.count > suggestionSplitBest.count)) suggestionSplitBest = suggestionSplit;
+                                if ((suggestionSplitBest == null) || (suggestionSplit.count.Item1 > suggestionSplitBest.count.Item1)) suggestionSplitBest = suggestionSplit;
                             }
                         }
                     }
@@ -991,7 +1013,7 @@ public class SymSpell
                         SuggestItem si = new SuggestItem();
                         si.term = termList1[i];
                         //estimated word occurrence probability P=10 / (N * 10^word length l)
-                        si.count = (long)((double)10 / Math.Pow((double)10, (double)si.term.Length));
+                        si.count.Item1 = (long)((double)10 / Math.Pow((double)10, (double)si.term.Length));
                         si.distance = editDistanceMax + 1;
                         suggestionParts.Add(si);
                     }
@@ -1001,7 +1023,7 @@ public class SymSpell
                     SuggestItem si = new SuggestItem();
                     si.term = termList1[i];
                     //estimated word occurrence probability P=10 / (N * 10^word length l)
-                    si.count = (long)((double)10 / Math.Pow((double)10, (double)si.term.Length));
+                    si.count.Item1 = (long)((double)10 / Math.Pow((double)10, (double)si.term.Length));
                     si.distance = editDistanceMax + 1;
                     suggestionParts.Add(si);
                 }
@@ -1013,8 +1035,8 @@ public class SymSpell
 
         double count = SymSpell.N;
         System.Text.StringBuilder s = new System.Text.StringBuilder();
-        foreach (SuggestItem si in suggestionParts) { s.Append(si.term + " "); count *= (double)si.count / (double)SymSpell.N; }
-        suggestion.count = (long)count;
+        foreach (SuggestItem si in suggestionParts) { s.Append(si.term + " "); count *= (double)si.count.Item1 / (double)SymSpell.N; }
+        suggestion.count.Item1 = (long)count;
 
         suggestion.term = s.ToString().TrimEnd();
         suggestion.distance = distanceComparer.Compare(input, suggestion.term, int.MaxValue);
@@ -1140,7 +1162,7 @@ public class SymSpell
                     //instead of computing the product of probabilities we are computing the sum of the logarithm of probabilities
                     //because the probabilities of words are about 10^-10, the product of many such small numbers could exceed (underflow) the floating number range and become zero
                     //log(ab)=log(a)+log(b)
-                    topProbabilityLog = (decimal)Math.Log10((double)results[0].count / (double)N);
+                    topProbabilityLog = (decimal)Math.Log10((double)results[0].count.Item1 / (double)N);
                 }
                 else
                 {
@@ -1188,6 +1210,4 @@ public class SymSpell
         }
         return compositions[circularIndex];
     }
-
-
 }
